@@ -1,0 +1,221 @@
+import crypto from 'node:crypto';
+import { z } from 'zod';
+import { env } from '../config/env.js';
+import { calculateCostPaise, estimateInputTokens, estimateWorstCaseCostPaise, resolveOutputTokensLimit } from '../budget/estimate.js';
+import { reserveBudget } from '../budget/reserve.js';
+import { settleBudget } from '../budget/settle.js';
+import { executeWithResilience } from './resilience.js';
+import { route } from '../router/route.js';
+
+// OpenAI-compatible chat completion body schema
+// Note: max_tokens is deliberately gateway-controlled and estimated internally;
+// callers cannot inflate or manipulate reservations.
+const chatCompletionSchema = z.object({
+  model: z.string().optional().default('auto'),
+  messages: z.array(
+    z.object({
+      role: z.enum(['system', 'user', 'assistant']),
+      content: z.string()
+    })
+  ).min(1, 'messages must contain at least 1 message'),
+  stream: z.literal(false).optional(),
+  temperature: z.number().min(0).max(2).optional()
+}).passthrough();
+
+/**
+ * Handle POST /v1/chat/completions
+ */
+export async function chatHandler(req, res) {
+  const requestId = `req_${crypto.randomBytes(12).toString('hex')}`;
+  const startTime = Date.now();
+
+  // 1. Validate stream rejection
+  if (req.body && req.body.stream === true) {
+    return res.status(400).json({
+      error: {
+        code: 'invalid_request',
+        message: 'Streaming (stream: true) is not supported by this gateway'
+      }
+    });
+  }
+
+  // 2. Validate request body schema
+  const parsed = chatCompletionSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({
+      error: {
+        code: 'invalid_request',
+        message: parsed.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join(', ')
+      }
+    });
+  }
+
+  const { messages, temperature } = parsed.data;
+  const apiKey = req.apiKey; // Injected by requireVirtualKey middleware
+
+  // 3. Determine routed model and routing reason
+  const routing = route(req.body, env);
+  const routedModel = routing.model;
+  const routeReason = routing.reason;
+
+  // Resolve gateway-owned output tokens budget for the routed model
+  const gatewayMaxTokens = resolveOutputTokensLimit(routedModel);
+
+  // 4. Estimate worst-case cost using the ROUTED model and atomically reserve budget.
+  // If the estimated cost exceeds available budget, the atomic UPDATE updates 0 rows
+  // and we deny immediately with 402 budget_exceeded.
+  const reservedPaise = estimateWorstCaseCostPaise(routedModel, messages, gatewayMaxTokens);
+  const reservation = await reserveBudget(apiKey.id, reservedPaise);
+
+  if (!reservation.success) {
+    // Record rejected row in usage_logs
+    try {
+      await settleBudget({
+        keyId: apiKey.id,
+        reservedPaise: 0,
+        actualCostPaise: 0,
+        usageLog: {
+          requestId,
+          provider: env.DEFAULT_PROVIDER,
+          model: routedModel,
+          routeReason,
+          tokensIn: estimateInputTokens(messages),
+          tokensOut: 0,
+          status: 'budget_rejected',
+          latencyMs: Date.now() - startTime,
+          errorCode: 'BUDGET_EXCEEDED'
+        }
+      });
+    } catch (e) {
+      req.log?.error({ err: e }, 'Failed to log budget rejection');
+    }
+
+    return res.status(402).json({
+      error: {
+        code: 'budget_exceeded',
+        message: 'Key monetary budget exceeded. Please add funds to proceed.'
+      }
+    });
+  }
+
+  let providerStatus = 'ok';
+  let errorCode = null;
+  let tokensIn = 0;
+  let tokensOut = 0;
+  let actualCostPaise = 0;
+  let responsePayload = null;
+  let responseStatusCode = 200;
+  let finalModel = routedModel;
+  let attemptsCount = 1;
+  let activeReservationPaise = reservedPaise;
+
+  try {
+    // 5. Call provider through resilience layer (timeout, retry, fallback, top-up)
+    const exec = await executeWithResilience({
+      keyId: apiKey.id,
+      initialModel: routedModel,
+      messages,
+      max_tokens: gatewayMaxTokens,
+      temperature,
+      currentReservedPaise: reservedPaise
+    });
+
+    finalModel = exec.servingModel;
+    attemptsCount = exec.attempts;
+    activeReservationPaise = exec.totalReservedPaise;
+
+    if (exec.success && exec.result) {
+      responsePayload = exec.result;
+      responseStatusCode = 200;
+
+      if (exec.result.usage) {
+        tokensIn = exec.result.usage.prompt_tokens ?? estimateInputTokens(messages);
+        tokensOut = exec.result.usage.completion_tokens ?? 0;
+      } else {
+        tokensIn = estimateInputTokens(messages);
+        tokensOut = 0;
+      }
+
+      actualCostPaise = calculateCostPaise(finalModel, tokensIn, tokensOut);
+    } else {
+      providerStatus = exec.isBudgetExceededOnFallback
+        ? 'budget_rejected'
+        : (exec.errorStatus === 504 ? 'timeout' : 'provider_error');
+      errorCode = exec.errorCode || 'UNKNOWN_ERROR';
+      responseStatusCode = exec.errorStatus || 502;
+      actualCostPaise = 0; // Full refund on failure
+
+      if (exec.isBudgetExceededOnFallback) {
+        responsePayload = {
+          error: {
+            code: 'budget_exceeded',
+            message: 'Insufficient budget to execute fallback model'
+          }
+        };
+      } else if (responseStatusCode === 504) {
+        responsePayload = {
+          error: {
+            code: 'provider_timeout',
+            message: 'Upstream provider timed out'
+          }
+        };
+      } else if (responseStatusCode === 400) {
+        responsePayload = {
+          error: {
+            code: 'invalid_request',
+            message: 'Upstream provider rejected the request format'
+          }
+        };
+      } else {
+        responsePayload = {
+          error: {
+            code: 'provider_error',
+            message: 'Upstream provider returned an error'
+          }
+        };
+      }
+    }
+  } catch (err) {
+    actualCostPaise = 0; // Refund reservation
+    providerStatus = err.isTimeout ? 'timeout' : 'provider_error';
+    errorCode = err.code || 'UNKNOWN_ERROR';
+    responseStatusCode = err.isTimeout ? 504 : 502;
+    responsePayload = {
+      error: {
+        code: err.isTimeout ? 'provider_timeout' : 'provider_error',
+        message: 'Error communicating with upstream provider'
+      }
+    };
+  } finally {
+    const latencyMs = Date.now() - startTime;
+
+    // 5. Settle budget atomically in PostgreSQL transaction
+    try {
+      await settleBudget({
+        keyId: apiKey.id,
+        reservedPaise: activeReservationPaise,
+        actualCostPaise,
+        usageLog: {
+          requestId,
+          provider: env.DEFAULT_PROVIDER,
+          model: finalModel,
+          routeReason,
+          tokensIn,
+          tokensOut,
+          status: providerStatus,
+          latencyMs,
+          errorCode
+        }
+      });
+    } catch (settleErr) {
+      req.log?.error({ err: settleErr }, 'Failed to settle budget and insert usage_log');
+    }
+
+    // Set custom tracking headers
+    res.setHeader('x-gateway-request-id', requestId);
+    res.setHeader('x-gateway-model', finalModel);
+    res.setHeader('x-gateway-route-reason', routeReason);
+
+    return res.status(responseStatusCode).json(responsePayload);
+  }
+}

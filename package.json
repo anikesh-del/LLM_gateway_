@@ -1,0 +1,25 @@
+{
+  "name": "minimal-llm-gateway",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Minimal LLM Gateway with virtual keys, per-key monetary budgets, PostgreSQL usage logs, timeout + bounded retry, and cheap-vs-capable router",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "migrate": "node src/db/migrate.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "pg": "^8.13.1",
+    "pino": "^9.6.0",
+    "pino-http": "^10.4.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "supertest": "^7.0.0",
+    "vitest": "^3.0.7"
+  }
+}

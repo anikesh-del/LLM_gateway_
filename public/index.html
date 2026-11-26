@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Minimal LLM Gateway Console</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace; max-width: 900px; margin: 20px auto; padding: 0 15px; color: #222; }
+    h1 { border-bottom: 2px solid #ddd; padding-bottom: 8px; font-size: 22px; }
+    h2 { font-size: 16px; margin-top: 20px; border-bottom: 1px solid #eee; padding-bottom: 4px; }
+    .auth-bar { background: #f4f4f4; padding: 12px; border-radius: 4px; margin-bottom: 20px; display: flex; gap: 15px; }
+    .auth-bar input { flex: 1; padding: 6px; }
+    .panel { border: 1px solid #ccc; border-radius: 4px; padding: 15px; margin-bottom: 20px; }
+    label { display: block; font-weight: bold; margin-top: 8px; font-size: 13px; }
+    input, select, textarea, button { font-family: inherit; font-size: 13px; margin-top: 4px; }
+    input, select, textarea { width: 100%; box-sizing: border-box; padding: 6px; }
+    button { background: #0066cc; color: #fff; border: none; padding: 8px 14px; border-radius: 4px; cursor: pointer; margin-top: 10px; }
+    button:hover { background: #0052a3; }
+    button.danger { background: #cc3300; }
+    button.danger:hover { background: #a32900; }
+    pre { background: #222; color: #00ff66; padding: 10px; border-radius: 4px; overflow-x: auto; font-size: 12px; max-height: 250px; }
+    .meta { font-size: 12px; color: #555; margin-top: 6px; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 10px; }
+    th, td { border: 1px solid #ddd; padding: 6px; text-align: left; }
+    th { background: #f9f9f9; }
+  </style>
+</head>
+<body>
+  <h1>Minimal LLM Gateway Console (Manual Dev Tool)</h1>
+  <p class="meta">Testing aid for manual execution. Virtual keys and admin secrets are kept only in memory during testing.</p>
+
+  <div class="auth-bar">
+    <div style="flex:1">
+      <label>Admin Secret (for /admin and /usage):</label>
+      <input type="password" id="adminSecret" placeholder="Paste ADMIN_SECRET">
+    </div>
+    <div style="flex:1">
+      <label>Virtual API Key (for chat proxy):</label>
+      <input type="password" id="virtualKey" placeholder="Bearer gw_...">
+    </div>
+  </div>
+
+  <!-- Panel 1: Create Virtual Key -->
+  <div class="panel">
+    <h2>1. Create Virtual API Key</h2>
+    <label>Key Name:</label>
+    <input type="text" id="newKeyName" value="test-client">
+    <label>Budget (in Paise, e.g. 1000 = ₹10):</label>
+    <input type="number" id="newKeyBudget" value="5000">
+    <button onclick="createKey()">Create Key</button>
+    <div id="createKeyResult"></div>
+  </div>
+
+  <!-- Panel 2: Send Chat Completion -->
+  <div class="panel">
+    <h2>2. Send Chat Completion (Proxy)</h2>
+    <label>Model (Router):</label>
+    <select id="chatModel">
+      <option value="auto">auto (Gateway Heuristic Router)</option>
+      <option value="gemini-3.5-flash-lite">gemini-3.5-flash-lite (Cheap)</option>
+      <option value="gemini-3.5-flash">gemini-3.5-flash (Capable)</option>
+    </select>
+    <label>User Prompt:</label>
+    <textarea id="chatPrompt" rows="3">What is the capital of India?</textarea>
+    <button onclick="sendChat()">Send Chat Request</button>
+
+    <div id="chatMeta" class="meta"></div>
+    <div id="chatAnswer" style="display:none; margin-top:12px; padding:14px; background:#f9f9f9; border-left:4px solid #0066cc; border-radius:4px; font-size:14px; line-height:1.6; white-space:pre-wrap;"></div>
+    <pre id="chatOutput" style="display:none;">// Raw JSON output</pre>
+  </div>
+
+  <!-- Panel 3: View Spend & Usage -->
+  <div class="panel">
+    <h2>3. Key Spend & Usage Logs</h2>
+    <label>Key ID (Optional, leave blank for aggregate):</label>
+    <input type="text" id="usageKeyId" placeholder="UUID of key">
+    <button onclick="fetchUsage()">Refresh Usage</button>
+    <button class="danger" onclick="revokeKey()">Revoke Key ID</button>
+    <div id="usageSummary" style="margin-top:10px;"></div>
+    <div id="usageTableContainer"></div>
+  </div>
+
+  <script>
+    async function createKey() {
+      const secret = document.getElementById('adminSecret').value.trim();
+      const name = document.getElementById('newKeyName').value.trim();
+      const budget = parseInt(document.getElementById('newKeyBudget').value, 10);
+      const out = document.getElementById('createKeyResult');
+
+      if (!secret) return alert('Enter Admin Secret in top bar first.');
+
+      try {
+        const res = await fetch('/admin/keys', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + secret },
+          body: JSON.stringify({ name, budget_paise: budget })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          out.innerHTML = `<p style="color:green"><strong>Created!</strong> Save this key: <code>${data.key}</code> (Prefix: ${data.key_prefix}, ID: ${data.id})</p>`;
+          document.getElementById('virtualKey').value = data.key;
+          document.getElementById('usageKeyId').value = data.id;
+        } else {
+          out.innerHTML = `<p style="color:red">Error: ${data.error?.message || 'Failed'}</p>`;
+        }
+      } catch (e) {
+        out.innerHTML = `<p style="color:red">Error: ${e.message}</p>`;
+      }
+    }
+
+    async function sendChat() {
+      let key = document.getElementById('virtualKey').value.trim();
+      const model = document.getElementById('chatModel').value;
+      const prompt = document.getElementById('chatPrompt').value;
+      const meta = document.getElementById('chatMeta');
+      const out = document.getElementById('chatOutput');
+
+      if (!key) return alert('Enter Virtual Key in top bar first.');
+
+      // Normalize key: if user pasted "Bearer gw_...", remove the "Bearer " prefix
+      if (key.toLowerCase().startsWith('bearer ')) {
+        key = key.slice(7).trim();
+      }
+
+      meta.innerHTML = 'Sending request to gateway...';
+      const answerBox = document.getElementById('chatAnswer');
+      const rawOut = document.getElementById('chatOutput');
+      answerBox.style.display = 'none';
+      rawOut.style.display = 'none';
+
+      const t0 = Date.now();
+      try {
+        const res = await fetch('/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
+          body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }] })
+        });
+
+        const elapsed = Date.now() - t0;
+        const data = await res.json();
+
+        meta.innerHTML = `<strong>Status:</strong> ${res.status} | 
+          <strong>Model Served:</strong> ${res.headers.get('x-gateway-model')} | 
+          <strong>Route Reason:</strong> ${res.headers.get('x-gateway-route-reason')} | 
+          <strong>Request ID:</strong> ${res.headers.get('x-gateway-request-id')} | 
+          <strong>Latency:</strong> ${elapsed}ms`;
+
+        if (res.ok && data.choices && data.choices[0]?.message?.content) {
+          answerBox.textContent = data.choices[0].message.content;
+          answerBox.style.display = 'block';
+        } else if (data.error) {
+          answerBox.innerHTML = `<span style="color:red"><strong>Error (${data.error.code || res.status}):</strong> ${data.error.message || 'Request failed'}</span>`;
+          answerBox.style.display = 'block';
+        } else {
+          rawOut.textContent = JSON.stringify(data, null, 2);
+          rawOut.style.display = 'block';
+        }
+      } catch (e) {
+        meta.innerHTML = '<span style="color:red">Request failed</span>';
+        answerBox.innerHTML = `<span style="color:red">Network Error: ${e.message}</span>`;
+        answerBox.style.display = 'block';
+      }
+    }
+
+    async function fetchUsage() {
+      const secret = document.getElementById('adminSecret').value.trim();
+      const keyId = document.getElementById('usageKeyId').value.trim();
+      const summaryDiv = document.getElementById('usageSummary');
+      const tableDiv = document.getElementById('usageTableContainer');
+
+      if (!secret) return alert('Enter Admin Secret in top bar first.');
+
+      const url = '/usage' + (keyId ? '?key_id=' + encodeURIComponent(keyId) : '');
+      try {
+        const res = await fetch(url, { headers: { 'Authorization': 'Bearer ' + secret } });
+        const data = await res.json();
+        if (!res.ok) {
+          summaryDiv.innerHTML = `<p style="color:red">${data.error?.message || 'Error'}</p>`;
+          return;
+        }
+
+        let keyHtml = '';
+        if (data.key) {
+          keyHtml = `<p><strong>Key:</strong> ${data.key.name} (${data.key.key_prefix}) | <strong>Budget:</strong> ₹${(data.key.budget_paise/100).toFixed(2)} | <strong>Spent:</strong> ₹${(data.key.spent_paise/100).toFixed(2)} | <strong>Remaining:</strong> ₹${(data.key.remaining_paise/100).toFixed(2)} | <strong>Revoked:</strong> ${data.key.revoked}</p>`;
+        }
+
+        summaryDiv.innerHTML = `${keyHtml}<p><strong>Total Spend:</strong> ₹${data.summary.total_spent_inr} (${data.summary.total_spent_paise} paise) | <strong>Requests:</strong> ${data.summary.total_requests} | <strong>Tokens In:</strong> ${data.summary.total_tokens_in} | <strong>Tokens Out:</strong> ${data.summary.total_tokens_out}</p>`;
+
+        if (data.recent_logs && data.recent_logs.length > 0) {
+          let rows = data.recent_logs.map(l => `<tr>
+            <td>${new Date(l.created_at).toLocaleTimeString()}</td>
+            <td>${l.model}</td>
+            <td>${l.route_reason}</td>
+            <td>${l.tokens_in}/${l.tokens_out}</td>
+            <td>₹${l.cost_inr} (${l.cost_paise}p)</td>
+            <td>${l.status}</td>
+            <td>${l.latency_ms}ms</td>
+          </tr>`).join('');
+          tableDiv.innerHTML = `<table><thead><tr><th>Time</th><th>Model</th><th>Reason</th><th>Tokens (In/Out)</th><th>Cost</th><th>Status</th><th>Latency</th></tr></thead><tbody>${rows}</tbody></table>`;
+        } else {
+          tableDiv.innerHTML = '<p class="meta">No usage rows yet.</p>';
+        }
+      } catch (e) {
+        summaryDiv.innerHTML = `<p style="color:red">Error: ${e.message}</p>`;
+      }
+    }
+
+    async function revokeKey() {
+      const secret = document.getElementById('adminSecret').value.trim();
+      const keyId = document.getElementById('usageKeyId').value.trim();
+      if (!secret || !keyId) return alert('Enter Admin Secret and Key ID first.');
+      if (!confirm('Are you sure you want to revoke key ' + keyId + '?')) return;
+
+      try {
+        const res = await fetch('/admin/keys/' + encodeURIComponent(keyId) + '/revoke', {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + secret }
+        });
+        const data = await res.json();
+        if (res.ok) {
+          alert('Key revoked successfully!');
+          fetchUsage();
+        } else {
+          alert('Revocation failed: ' + (data.error?.message || 'Error'));
+        }
+      } catch (e) {
+        alert('Error: ' + e.message);
+      }
+    }
+  </script>
+</body>
+</html>
