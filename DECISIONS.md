@@ -64,7 +64,13 @@ Proved by automated test in `tests/budget.test.js`:
 ## Fallback policy and why
 Retry once on transient network errors, timeouts, or provider 5xx/429 with jittered backoff.
 - **Never retry caller 4xx**: Errors such as 400 (malformed request) or 401/403/404 are deterministic caller errors. Retrying them wastes budget and introduces useless latency.
-- **Cheap-to-capable fallback**: If a cheap-tier model (`gemini-2.5-flash`) fails after retry, the gateway tops up the budget reservation (if the capable model worst-case cost is higher) and falls back to the capable model (`gemini-2.5-pro`) to protect caller availability.
+- **Circuit Breaker Pattern (`CLOSED` -> `OPEN` -> `HALF_OPEN`)**:
+  - Implemented in `src/gateway/circuitBreaker.js`.
+  - If 5 consecutive transient failures (5xx or timeouts) occur, the circuit breaker trips **`OPEN`**.
+  - Subsequent incoming requests fail fast in **0ms** with `503 circuit_open` and a `Retry-After: 15` header.
+  - After a 15-second cooldown, it transitions to **`HALF_OPEN`** and lets a single probe request test provider recovery. If it succeeds, the breaker resets to `CLOSED`.
+  - **Why it matters**: Prevents connection pool exhaustion, saves client time, avoids hammering a degraded provider ("thundering herd"), and avoids tying up user reservations on doomed requests.
+- **Cheap-to-capable fallback**: If a cheap-tier model (`gemini-3.5-flash-lite`) fails after retry, the gateway tops up the budget reservation and falls back to the capable model (`gemini-3.5-flash`) to protect caller availability.
 - **Budget top-up guarantee**: If the virtual key lacks sufficient remaining balance to afford the capable model's worst-case reservation, the fallback does not execute, avoiding overdrafts, and returns HTTP 402 `budget_exceeded`.
 - **All-failure refund**: If all attempts fail, the gateway returns clean 502/504 errors, refunds 100% of the reserved budget, and records the failure row in `usage_logs`.
 

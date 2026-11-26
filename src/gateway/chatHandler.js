@@ -6,6 +6,7 @@ import { reserveBudget } from '../budget/reserve.js';
 import { settleBudget } from '../budget/settle.js';
 import { executeWithResilience } from './resilience.js';
 import { route } from '../router/route.js';
+import { geminiBreaker } from './circuitBreaker.js';
 
 // OpenAI-compatible chat completion body schema
 // Note: max_tokens is deliberately gateway-controlled and estimated internally;
@@ -29,7 +30,18 @@ export async function chatHandler(req, res) {
   const requestId = `req_${crypto.randomBytes(12).toString('hex')}`;
   const startTime = Date.now();
 
-  // 1. Validate stream rejection
+  // 1. Check Circuit Breaker (Fail-fast protection against cascading failures)
+  if (geminiBreaker.isOpen()) {
+    res.setHeader('Retry-After', '15');
+    return res.status(503).json({
+      error: {
+        code: 'circuit_open',
+        message: 'Upstream provider is temporarily unavailable. Circuit breaker is OPEN. Please retry later.'
+      }
+    });
+  }
+
+  // 2. Validate stream rejection
   if (req.body && req.body.stream === true) {
     return res.status(400).json({
       error: {
@@ -39,7 +51,7 @@ export async function chatHandler(req, res) {
     });
   }
 
-  // 2. Validate request body schema
+  // 3. Validate request body schema
   const parsed = chatCompletionSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({
@@ -125,6 +137,7 @@ export async function chatHandler(req, res) {
     activeReservationPaise = exec.totalReservedPaise;
 
     if (exec.success && exec.result) {
+      geminiBreaker.recordSuccess();
       responsePayload = exec.result;
       responseStatusCode = 200;
 
@@ -144,6 +157,10 @@ export async function chatHandler(req, res) {
       errorCode = exec.errorCode || 'UNKNOWN_ERROR';
       responseStatusCode = exec.errorStatus || 502;
       actualCostPaise = 0; // Full refund on failure
+
+      if (exec.errorStatus === 502 || exec.errorStatus === 504) {
+        geminiBreaker.recordFailure();
+      }
 
       if (exec.isBudgetExceededOnFallback) {
         responsePayload = {

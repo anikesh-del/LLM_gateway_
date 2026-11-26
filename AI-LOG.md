@@ -8,6 +8,7 @@
 - Used Gemini 3.8 Flash for implementing Phase 5: resilience policy in `executeWithResilience` (overall deadline, bounded retry, jittered backoff, cheap-to-capable fallback, incremental reservation top-up, and mock resilience test suite).
 - Used Gemini 3.8 Flash for implementing Phase 6: pure heuristic router `route()`, table-driven tests for every routing rule, budget reservation by routed model, and `scripts/replay.js` benchmark recording a verified 34.5% cost reduction.
 - Used Gemini 3.8 Flash for implementing Phase 7: admin usage reporting handler (`GET /usage`) with spend/token/model breakdown, and single-file vanilla JS developer test console (`public/index.html`).
+- Added Circuit Breaker pattern (`src/gateway/circuitBreaker.js`) with tri-state state machine (`CLOSED`, `OPEN`, `HALF_OPEN`), probe recovery testing, and automated unit test suite.
 
 ## One place the AI was wrong or misleading and how it was caught
 - The AI initially configured `MODEL_CHEAP=gemini-2.5-flash` and `MODEL_CAPABLE=gemini-2.5-pro` based on older Gemini documentation. When tested against Google's live OpenAI-compatible endpoint, Google returned HTTP 404 with message: *"This model models/gemini-2.5-flash is no longer available to new users."* Caught by live manual testing in the test console and querying the live models endpoint. Updated to currently active models: `gemini-3.5-flash-lite` (Cheap) and `gemini-3.5-flash` (Capable).
