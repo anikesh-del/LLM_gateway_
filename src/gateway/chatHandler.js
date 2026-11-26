@@ -65,43 +65,31 @@ export async function chatHandler(req, res) {
   const { messages, temperature } = parsed.data;
   const apiKey = req.apiKey; // Injected by requireVirtualKey middleware
 
-  // 3. Determine routed model and routing reason
-  const routing = route(req.body, env);
-  const routedModel = routing.model;
-  const routeReason = routing.reason;
+  // 4. Determine routed model and routing reason
+  let routedModel;
+  let routeReason;
+  try {
+    const routing = route(req.body, env);
+    routedModel = routing.model;
+    routeReason = routing.reason;
+  } catch (routingErr) {
+    return res.status(routingErr.statusCode || 400).json({
+      error: {
+        code: routingErr.code || 'invalid_request',
+        message: routingErr.message
+      }
+    });
+  }
 
   // Resolve gateway-owned output tokens budget for the routed model
   const gatewayMaxTokens = resolveOutputTokensLimit(routedModel);
 
-  // 4. Estimate worst-case cost using the ROUTED model and atomically reserve budget.
-  // If the estimated cost exceeds available budget, the atomic UPDATE updates 0 rows
-  // and we deny immediately with 402 budget_exceeded.
+  // 5. Estimate worst-case cost using the ROUTED model and atomically reserve budget.
   const reservedPaise = estimateWorstCaseCostPaise(routedModel, messages, gatewayMaxTokens);
   const reservation = await reserveBudget(apiKey.id, reservedPaise);
 
   if (!reservation.success) {
-    // Record rejected row in usage_logs
-    try {
-      await settleBudget({
-        keyId: apiKey.id,
-        reservedPaise: 0,
-        actualCostPaise: 0,
-        usageLog: {
-          requestId,
-          provider: env.DEFAULT_PROVIDER,
-          model: routedModel,
-          routeReason,
-          tokensIn: estimateInputTokens(messages),
-          tokensOut: 0,
-          status: 'budget_rejected',
-          latencyMs: Date.now() - startTime,
-          errorCode: 'BUDGET_EXCEEDED'
-        }
-      });
-    } catch (e) {
-      req.log?.error({ err: e }, 'Failed to log budget rejection');
-    }
-
+    // Return 402 immediately without inserting a log row to prevent table bloat and high write amplification
     return res.status(402).json({
       error: {
         code: 'budget_exceeded',
@@ -141,12 +129,13 @@ export async function chatHandler(req, res) {
       responsePayload = exec.result;
       responseStatusCode = 200;
 
+      // Extract usage or fallback to estimate if missing from provider
       if (exec.result.usage) {
         tokensIn = exec.result.usage.prompt_tokens ?? estimateInputTokens(messages);
-        tokensOut = exec.result.usage.completion_tokens ?? 0;
+        tokensOut = exec.result.usage.completion_tokens ?? gatewayMaxTokens;
       } else {
         tokensIn = estimateInputTokens(messages);
-        tokensOut = 0;
+        tokensOut = gatewayMaxTokens;
       }
 
       actualCostPaise = calculateCostPaise(finalModel, tokensIn, tokensOut);
@@ -206,7 +195,7 @@ export async function chatHandler(req, res) {
   } finally {
     const latencyMs = Date.now() - startTime;
 
-    // 5. Settle budget atomically in PostgreSQL transaction
+    // 6. Settle budget atomically in PostgreSQL transaction
     try {
       await settleBudget({
         keyId: apiKey.id,
@@ -220,6 +209,7 @@ export async function chatHandler(req, res) {
           tokensIn,
           tokensOut,
           status: providerStatus,
+          attempts: attemptsCount,
           latencyMs,
           errorCode
         }
@@ -227,12 +217,12 @@ export async function chatHandler(req, res) {
     } catch (settleErr) {
       req.log?.error({ err: settleErr }, 'Failed to settle budget and insert usage_log');
     }
-
-    // Set custom tracking headers
-    res.setHeader('x-gateway-request-id', requestId);
-    res.setHeader('x-gateway-model', finalModel);
-    res.setHeader('x-gateway-route-reason', routeReason);
-
-    return res.status(responseStatusCode).json(responsePayload);
   }
+
+  // 7. Send HTTP response outside finally block
+  res.setHeader('x-gateway-request-id', requestId);
+  res.setHeader('x-gateway-model', finalModel);
+  res.setHeader('x-gateway-route-reason', routeReason);
+
+  return res.status(responseStatusCode).json(responsePayload);
 }

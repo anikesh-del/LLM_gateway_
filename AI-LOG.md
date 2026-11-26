@@ -6,20 +6,21 @@
 - Used Gemini 3.8 Flash for implementing Phase 3: token estimation heuristic (`ceil(chars / 4)`), cost calculation in integer paise directly using Indian Rupees (INR) rates, OpenAI-compatible proxy client, `usage_logs` writer, and tracking headers.
 - Used Gemini 3.8 Flash for implementing Phase 4: atomic budget reservation (`reserveBudget`), transactional settlement & refund (`settleBudget`), and 5-way parallel concurrency testing.
 - Used Gemini 3.8 Flash for implementing Phase 5: resilience policy in `executeWithResilience` (overall deadline, bounded retry, jittered backoff, cheap-to-capable fallback, incremental reservation top-up, and mock resilience test suite).
-- Used Gemini 3.8 Flash for implementing Phase 6: pure heuristic router `route()`, table-driven tests for every routing rule, budget reservation by routed model, and `scripts/replay.js` benchmark recording a verified 34.5% cost reduction.
+- Used Gemini 3.8 Flash for implementing Phase 6: pure heuristic router `route()`, table-driven tests for every routing rule, budget reservation by routed model, and `scripts/replay.js` benchmark recording a verified 37.5% cost reduction across 30 varied prompts.
 - Used Gemini 3.8 Flash for implementing Phase 7: admin usage reporting handler (`GET /usage`) with spend/token/model breakdown, and single-file vanilla JS developer test console (`public/index.html`).
-- Added Circuit Breaker pattern (`src/gateway/circuitBreaker.js`) with tri-state state machine (`CLOSED`, `OPEN`, `HALF_OPEN`), probe recovery testing, and automated unit test suite.
+- Added Circuit Breaker pattern (`src/gateway/circuitBreaker.js`) with tri-state state machine (`CLOSED`, `OPEN`, `HALF_OPEN`), single-probe recovery in `HALF_OPEN`, and automated unit test suite.
 
 ## One place the AI was wrong or misleading and how it was caught
 - The AI initially configured `MODEL_CHEAP=gemini-2.5-flash` and `MODEL_CAPABLE=gemini-2.5-pro` based on older Gemini documentation. When tested against Google's live OpenAI-compatible endpoint, Google returned HTTP 404 with message: *"This model models/gemini-2.5-flash is no longer available to new users."* Caught by live manual testing in the test console and querying the live models endpoint. Updated to currently active models: `gemini-3.5-flash-lite` (Cheap) and `gemini-3.5-flash` (Capable).
 
 ## One place the author overrode the AI and why
 - Clarified using plain JavaScript ES modules rather than TypeScript (noting the author's preference and context rules), and standardized file naming to uppercase `DECISIONS.md` and `AI-LOG.md`.
+- Explicitly mandated that output tokens cannot be client-controlled because a client could manipulate output tokens to artificially pass or fail reservations; instead, the gateway estimates and owns default output token ceilings per tier (1000 for lite, 2500 for flash).
 
 ## How control was kept over code not typed by hand (secrets, budget logic, provider call)
-- Secrets: Strict `.gitignore` protecting `.env`, `.env.example` using dummy placeholders only, and zero hardcoded credentials.
+- Secrets: Strict `.gitignore` protecting `.env`, `.env.example` using dummy placeholders only, and zero hardcoded credentials. Virtual keys stored as SHA-256 hashes only.
 - Budget logic: Implemented using raw SQL single-statement atomic `UPDATE` with integer paise to avoid float errors and JavaScript-side race conditions.
 - Provider verification: Gemini OpenAI-compatible endpoint URL and pricing verified directly against Google AI Studio documentation rather than memory.
 
 ## Something learned from scratch and how
-- `TODO (author)`
+- Learned how modern multimodal reasoning models (such as `gemini-3.5-flash`) handle internal chain-of-thought tokens. Without bounding reasoning effort or output token reservation, the model generates thousands of internal thinking tokens that exhaust output limits and spike latency to ~40s before returning partial answers. Setting `reasoning_effort: "low"` and budgeting adequate output tokens solved the truncation and reduced latency significantly.

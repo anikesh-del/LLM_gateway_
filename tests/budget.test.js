@@ -58,17 +58,16 @@ describe('Phase 4 Budget Enforcement & Concurrency Suite', () => {
       .post('/v1/chat/completions')
       .set('Authorization', `Bearer ${key}`)
       .send({
-        model: 'gemini-2.5-flash',
+        model: 'gemini-3.5-flash-lite',
         messages: [{ role: 'user', content: 'Should fail with 402' }]
       });
 
     expect(res.status).toBe(402);
     expect(res.body.error.code).toBe('budget_exceeded');
 
-    // Verify usage log records budget_rejected
+    // Verify usage log is NOT inserted on 402 rejection
     const log = await pool.query('SELECT * FROM usage_logs WHERE api_key_id = $1', [keyId]);
-    expect(log.rows.length).toBe(1);
-    expect(log.rows[0].status).toBe('budget_rejected');
+    expect(log.rows.length).toBe(0);
   });
 
   it('concurrency test: exactly 1 request succeeds when key has budget for exactly 1 request', async () => {

@@ -32,9 +32,15 @@ export class CircuitBreaker {
     if (this.state === 'OPEN') {
       if (Date.now() >= this.nextAttempt) {
         this.state = 'HALF_OPEN';
-        return false; // Allow probe request
+        // Reset nextAttempt into the future to ensure ONLY ONE single probe request
+        // passes through while in HALF_OPEN before it trips or closes
+        this.nextAttempt = Date.now() + this.cooldownMs;
+        return false; // Allow the single probe
       }
       return true; // Still open, fail fast
+    }
+    if (this.state === 'HALF_OPEN') {
+      return true; // Already probing; block concurrent callers until probe finishes
     }
     return false;
   }

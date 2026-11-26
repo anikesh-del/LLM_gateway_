@@ -3,20 +3,20 @@ import { route } from '../src/router/route.js';
 
 describe('Phase 6 Router Suite (Table-Driven Heuristics)', () => {
   const config = {
-    MODEL_CHEAP: 'gemini-2.5-flash',
-    MODEL_CAPABLE: 'gemini-2.5-pro',
+    MODEL_CHEAP: 'gemini-3.5-flash-lite',
+    MODEL_CAPABLE: 'gemini-3.5-flash',
     ROUTER_LONG_PROMPT_TOKENS: 1500,
     ROUTER_CAPABLE_MAX_TOKENS: 1024
   };
 
   it('honors explicit model if provided and not "auto"', () => {
-    const res = route({ model: 'gemini-2.5-flash' }, config);
-    expect(res.model).toBe('gemini-2.5-flash');
+    const res = route({ model: 'gemini-3.5-flash-lite' }, config);
+    expect(res.model).toBe('gemini-3.5-flash-lite');
     expect(res.reason).toBe('explicit');
     expect(res.tier).toBe('cheap');
 
-    const res2 = route({ model: 'gemini-2.5-pro' }, config);
-    expect(res2.model).toBe('gemini-2.5-pro');
+    const res2 = route({ model: 'gemini-3.5-flash' }, config);
+    expect(res2.model).toBe('gemini-3.5-flash');
     expect(res2.reason).toBe('explicit');
     expect(res2.tier).toBe('capable');
   });

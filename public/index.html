@@ -81,6 +81,17 @@
   </div>
 
   <script>
+    // Helper to safely escape text and avoid XSS / innerHTML vulnerabilities
+    function escapeText(str) {
+      if (str === null || str === undefined) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
     async function createKey() {
       const secret = document.getElementById('adminSecret').value.trim();
       const name = document.getElementById('newKeyName').value.trim();
@@ -97,14 +108,14 @@
         });
         const data = await res.json();
         if (res.ok) {
-          out.innerHTML = `<p style="color:green"><strong>Created!</strong> Save this key: <code>${data.key}</code> (Prefix: ${data.key_prefix}, ID: ${data.id})</p>`;
+          out.innerHTML = `<p style="color:green"><strong>Created!</strong> Save this key: <code>${escapeText(data.key)}</code> (Prefix: ${escapeText(data.key_prefix)}, ID: ${escapeText(data.id)})</p>`;
           document.getElementById('virtualKey').value = data.key;
           document.getElementById('usageKeyId').value = data.id;
         } else {
-          out.innerHTML = `<p style="color:red">Error: ${data.error?.message || 'Failed'}</p>`;
+          out.innerHTML = `<p style="color:red">Error: ${escapeText(data.error?.message || 'Failed')}</p>`;
         }
       } catch (e) {
-        out.innerHTML = `<p style="color:red">Error: ${e.message}</p>`;
+        out.innerHTML = `<p style="color:red">Error: ${escapeText(e.message)}</p>`;
       }
     }
 
@@ -117,12 +128,11 @@
 
       if (!key) return alert('Enter Virtual Key in top bar first.');
 
-      // Normalize key: if user pasted "Bearer gw_...", remove the "Bearer " prefix
       if (key.toLowerCase().startsWith('bearer ')) {
         key = key.slice(7).trim();
       }
 
-      meta.innerHTML = 'Sending request to gateway...';
+      meta.textContent = 'Sending request to gateway...';
       const answerBox = document.getElementById('chatAnswer');
       const rawOut = document.getElementById('chatOutput');
       answerBox.style.display = 'none';
@@ -139,25 +149,24 @@
         const elapsed = Date.now() - t0;
         const data = await res.json();
 
-        meta.innerHTML = `<strong>Status:</strong> ${res.status} | 
-          <strong>Model Served:</strong> ${res.headers.get('x-gateway-model')} | 
-          <strong>Route Reason:</strong> ${res.headers.get('x-gateway-route-reason')} | 
-          <strong>Request ID:</strong> ${res.headers.get('x-gateway-request-id')} | 
-          <strong>Latency:</strong> ${elapsed}ms`;
+        // Safe DOM updates without innerHTML injections
+        meta.textContent = `Status: ${res.status} | Model Served: ${res.headers.get('x-gateway-model') || 'N/A'} | Route Reason: ${res.headers.get('x-gateway-route-reason') || 'N/A'} | Request ID: ${res.headers.get('x-gateway-request-id') || 'N/A'} | Latency: ${elapsed}ms`;
 
         if (res.ok && data.choices && data.choices[0]?.message?.content) {
           answerBox.textContent = data.choices[0].message.content;
           answerBox.style.display = 'block';
         } else if (data.error) {
-          answerBox.innerHTML = `<span style="color:red"><strong>Error (${data.error.code || res.status}):</strong> ${data.error.message || 'Request failed'}</span>`;
+          answerBox.textContent = `Error (${data.error.code || res.status}): ${data.error.message || 'Request failed'}`;
+          answerBox.style.color = 'red';
           answerBox.style.display = 'block';
         } else {
           rawOut.textContent = JSON.stringify(data, null, 2);
           rawOut.style.display = 'block';
         }
       } catch (e) {
-        meta.innerHTML = '<span style="color:red">Request failed</span>';
-        answerBox.innerHTML = `<span style="color:red">Network Error: ${e.message}</span>`;
+        meta.textContent = 'Request failed';
+        answerBox.textContent = `Network Error: ${e.message}`;
+        answerBox.style.color = 'red';
         answerBox.style.display = 'block';
       }
     }
@@ -175,33 +184,33 @@
         const res = await fetch(url, { headers: { 'Authorization': 'Bearer ' + secret } });
         const data = await res.json();
         if (!res.ok) {
-          summaryDiv.innerHTML = `<p style="color:red">${data.error?.message || 'Error'}</p>`;
+          summaryDiv.innerHTML = `<p style="color:red">${escapeText(data.error?.message || 'Error')}</p>`;
           return;
         }
 
         let keyHtml = '';
         if (data.key) {
-          keyHtml = `<p><strong>Key:</strong> ${data.key.name} (${data.key.key_prefix}) | <strong>Budget:</strong> ₹${(data.key.budget_paise/100).toFixed(2)} | <strong>Spent:</strong> ₹${(data.key.spent_paise/100).toFixed(2)} | <strong>Remaining:</strong> ₹${(data.key.remaining_paise/100).toFixed(2)} | <strong>Revoked:</strong> ${data.key.revoked}</p>`;
+          keyHtml = `<p><strong>Key:</strong> ${escapeText(data.key.name)} (${escapeText(data.key.key_prefix)}) | <strong>Budget:</strong> ₹${escapeText((data.key.budget_paise/100).toFixed(2))} | <strong>Spent:</strong> ₹${escapeText((data.key.spent_paise/100).toFixed(2))} | <strong>Remaining:</strong> ₹${escapeText((data.key.remaining_paise/100).toFixed(2))} | <strong>Revoked:</strong> ${escapeText(data.key.revoked)}</p>`;
         }
 
-        summaryDiv.innerHTML = `${keyHtml}<p><strong>Total Spend:</strong> ₹${data.summary.total_spent_inr} (${data.summary.total_spent_paise} paise) | <strong>Requests:</strong> ${data.summary.total_requests} | <strong>Tokens In:</strong> ${data.summary.total_tokens_in} | <strong>Tokens Out:</strong> ${data.summary.total_tokens_out}</p>`;
+        summaryDiv.innerHTML = `${keyHtml}<p><strong>Total Spend:</strong> ₹${escapeText(data.summary.total_spent_inr)} (${escapeText(data.summary.total_spent_paise)} paise) | <strong>Requests:</strong> ${escapeText(data.summary.total_requests)} | <strong>Tokens In:</strong> ${escapeText(data.summary.total_tokens_in)} | <strong>Tokens Out:</strong> ${escapeText(data.summary.total_tokens_out)}</p>`;
 
         if (data.recent_logs && data.recent_logs.length > 0) {
           let rows = data.recent_logs.map(l => `<tr>
-            <td>${new Date(l.created_at).toLocaleTimeString()}</td>
-            <td>${l.model}</td>
-            <td>${l.route_reason}</td>
-            <td>${l.tokens_in}/${l.tokens_out}</td>
-            <td>₹${l.cost_inr} (${l.cost_paise}p)</td>
-            <td>${l.status}</td>
-            <td>${l.latency_ms}ms</td>
+            <td>${escapeText(new Date(l.created_at).toLocaleTimeString())}</td>
+            <td>${escapeText(l.model)}</td>
+            <td>${escapeText(l.route_reason)}</td>
+            <td>${escapeText(l.tokens_in)}/${escapeText(l.tokens_out)}</td>
+            <td>₹${escapeText(l.cost_inr)} (${escapeText(l.cost_paise)}p)</td>
+            <td>${escapeText(l.status)}</td>
+            <td>${escapeText(l.latency_ms)}ms</td>
           </tr>`).join('');
           tableDiv.innerHTML = `<table><thead><tr><th>Time</th><th>Model</th><th>Reason</th><th>Tokens (In/Out)</th><th>Cost</th><th>Status</th><th>Latency</th></tr></thead><tbody>${rows}</tbody></table>`;
         } else {
           tableDiv.innerHTML = '<p class="meta">No usage rows yet.</p>';
         }
       } catch (e) {
-        summaryDiv.innerHTML = `<p style="color:red">Error: ${e.message}</p>`;
+        summaryDiv.innerHTML = `<p style="color:red">Error: ${escapeText(e.message)}</p>`;
       }
     }
 

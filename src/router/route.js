@@ -1,5 +1,6 @@
 import { env } from '../config/env.js';
 import { estimateInputTokens } from '../budget/estimate.js';
+import { ALLOWED_MODELS } from '../config/pricing.js';
 
 // Keywords that indicate complex reasoning, analysis, or technical work
 const REASONING_KEYWORDS = [
@@ -25,6 +26,13 @@ export function route(body = {}, config = env) {
 
   // 1. Explicit model provided and not "auto"
   if (explicitModel && explicitModel !== 'auto') {
+    if (!ALLOWED_MODELS.includes(explicitModel)) {
+      const err = new Error(`Model '${explicitModel}' is not allowed. Allowed models: ${ALLOWED_MODELS.join(', ')}`);
+      err.statusCode = 400;
+      err.code = 'invalid_model';
+      throw err;
+    }
+
     const isCapable = explicitModel === config.MODEL_CAPABLE;
     return {
       model: explicitModel,

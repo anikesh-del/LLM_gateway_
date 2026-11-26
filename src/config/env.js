@@ -18,7 +18,7 @@ const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   PORT: z.coerce.number().default(3000),
   DATABASE_URL: z.string().min(1, 'DATABASE_URL or DB_* credentials must be provided'),
-  ADMIN_SECRET: z.string().min(16, 'ADMIN_SECRET must be at least 16 characters long').default('gateway_admin_secret_dev_key_32chars'),
+  ADMIN_SECRET: z.string().min(16, 'ADMIN_SECRET must be at least 16 characters long'),
   
   DEFAULT_PROVIDER: z.string().default('gemini'),
   GEMINI_API_KEY: z.string().min(1, 'GEMINI_API_KEY is required'),

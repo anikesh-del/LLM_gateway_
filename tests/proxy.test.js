@@ -20,15 +20,6 @@ describe('Phase 3 Proxy and Logging Suite', () => {
       req.on('end', () => {
         const parsed = body ? JSON.parse(body) : {};
 
-        // Simulate timeout on special prompt
-        if (parsed.messages?.[0]?.content === 'TRIGGER_TIMEOUT') {
-          setTimeout(() => {
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ choices: [] }));
-          }, 300);
-          return;
-        }
-
         // Simulate upstream error
         if (parsed.messages?.[0]?.content === 'TRIGGER_500') {
           res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -90,15 +81,15 @@ describe('Phase 3 Proxy and Logging Suite', () => {
     });
 
     it('calculates integer paise correctly', () => {
-      // gemini-2.5-flash: ₹25.80/1M in, ₹215.00/1M out.
+      // gemini-3.5-flash: ₹25.80/1M in, ₹215.00/1M out.
       // 1000 in (₹0.02580) + 1000 out (₹0.21500) = ₹0.24080 = 24.08 paise -> ceil = 25 paise
-      const paise = calculateCostPaise('gemini-2.5-flash', 1000, 1000);
+      const paise = calculateCostPaise('gemini-3.5-flash', 1000, 1000);
       expect(paise).toBe(25);
     });
 
     it('bounds worst-case cost by max_tokens', () => {
       const messages = [{ role: 'user', content: 'Test' }];
-      const worstCase = estimateWorstCaseCostPaise('gemini-2.5-flash', messages, 500);
+      const worstCase = estimateWorstCaseCostPaise('gemini-3.5-flash', messages, 500);
       expect(worstCase).toBeGreaterThan(0);
       expect(Number.isInteger(worstCase)).toBe(true);
     });
@@ -110,7 +101,7 @@ describe('Phase 3 Proxy and Logging Suite', () => {
         .post('/v1/chat/completions')
         .set('Authorization', `Bearer ${testKey}`)
         .send({
-          model: 'gemini-2.5-flash',
+          model: 'gemini-3.5-flash',
           messages: [{ role: 'user', content: 'Hi' }],
           stream: true
         });
@@ -125,7 +116,7 @@ describe('Phase 3 Proxy and Logging Suite', () => {
         .post('/v1/chat/completions')
         .set('Authorization', `Bearer ${testKey}`)
         .send({
-          model: 'gemini-2.5-flash',
+          model: 'gemini-3.5-flash',
           messages: [{ role: 'user', content: 'Hello mock' }]
         });
 
@@ -133,7 +124,7 @@ describe('Phase 3 Proxy and Logging Suite', () => {
       expect(res.body).toHaveProperty('choices');
       expect(res.body.choices[0].message.content).toBe('Hello from mock LLM!');
       expect(res.headers['x-gateway-request-id']).toMatch(/^req_/);
-      expect(res.headers['x-gateway-model']).toBe('gemini-2.5-flash');
+      expect(res.headers['x-gateway-model']).toBe('gemini-3.5-flash');
       expect(res.headers['x-gateway-route-reason']).toBe('explicit');
 
       // Verify usage log record was inserted in Postgres
@@ -152,7 +143,7 @@ describe('Phase 3 Proxy and Logging Suite', () => {
         .post('/v1/chat/completions')
         .set('Authorization', `Bearer ${testKey}`)
         .send({
-          model: 'gemini-2.5-flash',
+          model: 'gemini-3.5-flash',
           messages: [{ role: 'user', content: 'TRIGGER_500' }]
         });
 

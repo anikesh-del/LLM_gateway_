@@ -13,6 +13,19 @@ import { pool } from '../db/pool.js';
 export async function getUsageHandler(req, res) {
   const { key_id } = req.query;
 
+  // Validate key_id is a valid UUID if provided
+  if (key_id) {
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(key_id)) {
+      return res.status(400).json({
+        error: {
+          code: 'invalid_request',
+          message: 'key_id must be a valid UUID'
+        }
+      });
+    }
+  }
+
   try {
     let keyFilter = '';
     let params = [];

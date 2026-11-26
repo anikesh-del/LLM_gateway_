@@ -41,13 +41,15 @@ app.get('/usage', requireAdminAuth, getUsageHandler);
 // Main Gateway chat completion endpoint
 app.post('/v1/chat/completions', requireVirtualKey, chatHandler);
 
-// Test virtual key auth route (placeholder before full proxy in Phase 3)
-app.get('/v1/me', requireVirtualKey, (req, res) => {
-  res.json({
-    authenticated: true,
-    key: req.apiKey
+// Test-only virtual key inspection route (used by tests/auth.test.js)
+if (env.NODE_ENV === 'test') {
+  app.get('/v1/me', requireVirtualKey, (req, res) => {
+    res.json({
+      authenticated: true,
+      key: req.apiKey
+    });
   });
-});
+}
 
 // Health check endpoint: liveness + DB ping
 app.get('/health', async (req, res) => {
@@ -68,8 +70,7 @@ app.get('/health', async (req, res) => {
     logger.error({ err }, 'Health check database connection failed');
     return res.status(503).json({
       status: 'unhealthy',
-      database: 'disconnected',
-      error: err.message
+      database: 'disconnected'
     });
   }
 });

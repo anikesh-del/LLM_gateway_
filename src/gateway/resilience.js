@@ -10,9 +10,8 @@ import { reserveBudget } from '../budget/reserve.js';
  */
 export function isRetryable(status, err) {
   if (err) {
-    if (err.isTimeout || err.name === 'AbortError') return true;
-    if (err.code === 'ECONNRESET' || err.code === 'ETIMEDOUT' || err.code === 'ENOTFOUND') return true;
-    return true; // General network/fetch exceptions
+    // Retry on timeout, abort, or network errors
+    return !!(err.isTimeout || err.name === 'AbortError' || err.code === 'ECONNRESET' || err.code === 'ETIMEDOUT' || err.name === 'FetchError' || err.message?.includes('fetch failed'));
   }
 
   if (typeof status === 'number') {
@@ -109,13 +108,14 @@ export async function executeWithResilience({
 
       // Check if retryable
       if (!isRetryable(res.status, null)) {
-        // Non-retryable (e.g. 400 Bad Request) -> fail immediately
+        // Map caller format errors (400, 422) to caller 400; map upstream auth/not found (401, 403, 404) to gateway 502
+        const mappedStatus = (res.status === 400 || res.status === 422) ? 400 : 502;
         return {
           success: false,
           servingModel: currentModel,
           attempts,
           totalReservedPaise,
-          errorStatus: res.status >= 400 && res.status < 500 ? 400 : 502,
+          errorStatus: mappedStatus,
           errorCode: lastErrorCode
         };
       }
