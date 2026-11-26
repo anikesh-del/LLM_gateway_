@@ -32,15 +32,18 @@ Client (Authorization: Bearer gw_...)
 - **Pick**: Integer paise using raw parameterized SQL queries.
 - **Tradeoff knowingly accepted**: Writing manual SQL queries and migrations instead of automatic schema generation, in exchange for guaranteeing zero floating-point rounding errors and exposing the exact concurrency-safe `UPDATE ... WHERE ... RETURNING` locking mechanics.
 
-### 3. Gateway-Controlled Output Reservations (Ignoring Client `max_tokens`)
-- **Options considered**: (A) Trust client's `max_tokens` for reservation, (B) Gateway sets fixed output ceilings per model.
-- **Pick**: Gateway defines standard model output ceilings (`gemini-3.5-flash-lite`: 1000 tokens, `gemini-3.5-flash`: 2500 tokens).
-- **Tradeoff knowingly accepted**: A caller with a simple question routed to capable has budget reserved for 2500 tokens until the call finishes and reconciles. The benefit is preventing malicious or erroneous clients from passing `max_tokens: 100000` to artificially lock up reservations.
+### 3. Gateway-Controlled Output Reservations vs Client `max_tokens`
+- **Options considered**: (A) Trust client's `max_tokens` for reservation and upstream execution, (B) Gateway sets fixed output ceilings per model while using `body.max_tokens` only as an advisory routing signal.
+- **Pick**: Dual-purpose design:
+  1. The heuristic router reads `body.max_tokens` strictly as an advisory signal of caller intent: if the caller requests `max_tokens > 1024`, the prompt routes to the capable model.
+  2. For budget reservation and provider invocation, the gateway overrides `max_tokens` with fixed gateway-owned ceilings (`gemini-3.5-flash-lite`: 1000 tokens, `gemini-3.5-flash`: 2500 tokens).
+- **Tradeoff knowingly accepted**: A caller who intends a brief answer from capable still has budget reserved for 2500 tokens until the call settles. The critical benefit is preventing adversarial or broken clients from passing `max_tokens: 100000` to lock up massive budgets or passing `max_tokens: 1` to slip past budget enforcement and generate runaway costs.
 
-### 4. Circuit Breaker for Upstream Resilience
-- **Options considered**: (A) Indefinite retries and timeouts on every request, (B) Lightweight tri-state in-memory Circuit Breaker (`CLOSED`, `OPEN`, `HALF_OPEN`).
-- **Pick**: In-memory Circuit Breaker tripping after 5 consecutive transient failures.
-- **Tradeoff knowingly accepted**: Multi-instance deployments would not share breaker state (each node tracks its own upstream health), but it requires zero Redis infrastructure and instantly saves client latency and socket exhaustion during upstream outages.
+### 4. Circuit Breaker for Upstream Resilience & Deadlock Prevention
+- **Options considered**: (A) Indefinite retries and timeouts on every request, (B) Lightweight tri-state in-memory Circuit Breaker (`CLOSED`, `OPEN`, `HALF_OPEN`) with explicit probe release.
+- **Pick**: In-memory Circuit Breaker tripping after 5 consecutive transient failures with probe lifecycle management.
+- **Deadlock prevention in `HALF_OPEN`**: When the breaker enters `HALF_OPEN`, it grants a single probe request. If that request is rejected caller-side (e.g., 400 schema validation, 400 stream rejection, or 402 budget exhaustion) before reaching the provider, `geminiBreaker.releaseProbe()` immediately resets the breaker to `OPEN` with expired cooldown so the next legitimate request can probe. Additionally, `isOpen()` expires `HALF_OPEN` after the cooldown duration if a probe is abandoned, preventing permanent 503 lockouts.
+- **Tradeoff knowingly accepted**: Multi-instance deployments would not share breaker state without Redis, but each node independently fails fast in 0ms and saves client latency and socket exhaustion during upstream outages.
 
 ### 5. Masking Raw Provider Errors
 - **Options considered**: (A) Forward provider error JSON directly to client, (B) Map to sanitized gateway error envelope.
@@ -88,6 +91,7 @@ Retry once on transient network errors, timeouts, or provider 5xx/429 with jitte
   - If 5 consecutive transient failures (5xx or timeouts) occur, the circuit breaker trips **`OPEN`**.
   - Subsequent incoming requests fail fast in **0ms** with `503 circuit_open` and a `Retry-After: 15` header.
   - After a 15-second cooldown, it transitions to **`HALF_OPEN`** and blocks all other concurrent requests while allowing **one single probe request** to test provider recovery. If the probe succeeds, the breaker resets to `CLOSED`. If it fails, it trips back to `OPEN`.
+  - **Probe Deadlock Protection**: If a probe request fails caller-side (e.g. 400 validation, 402 budget exceeded), `geminiBreaker.releaseProbe()` immediately unlocks the probe state so the next request can probe without waiting for cooldown. Additionally, `isOpen()` expires `HALF_OPEN` after the cooldown duration to prevent indefinite lockouts.
 - **Cheap-to-capable fallback**: If a cheap-tier model (`gemini-3.5-flash-lite`) fails after retry, the gateway tops up the budget reservation and falls back to the capable model (`gemini-3.5-flash`) to protect caller availability.
 - **Same-provider-only limitation**: In this take-home, fallback is configured between model tiers on Gemini rather than across multiple providers. Tradeoff: If Google has a global region outage, switching to a secondary provider (like Groq) would be superior; however, multi-provider credentials introduce distinct rate structures, schema idiosyncrasies, and security surfaces.
 - **Budget top-up guarantee**: If the virtual key lacks sufficient remaining balance to afford the capable model's reservation, the fallback does not execute, avoiding overdrafts, and returns HTTP 402 `budget_exceeded`.
@@ -97,13 +101,13 @@ Deterministic heuristic router with zero LLM overhead:
 1. **Explicit override & allowlist**: If the client passes a specific model name, it must be in the allowlist (`gemini-3.5-flash-lite`, `gemini-3.5-flash`) or it is rejected with 400 `invalid_model`.
 2. **Deterministic heuristics**: When `model` is omitted or `"auto"`, the request is routed to **Capable** (`gemini-3.5-flash`) if any of these trigger:
    - Estimated input tokens > 1500 (`ROUTER_LONG_PROMPT_TOKENS`).
-   - Requested `max_tokens` > 1024 (`ROUTER_CAPABLE_MAX_TOKENS`).
+   - Requested `max_tokens` > 1024 (`ROUTER_CAPABLE_MAX_TOKENS`) as caller generation intent.
    - Multi-turn conversation depth > 6 messages.
    - Code detected (markdown fences ```` ``` ````, keywords `function`, `class`, `import`).
    - Reasoning keywords (`step by step`, `analyze`, `prove`, `debug`, `design`, `compare`).
 3. Otherwise, it defaults to **Cheap** (`gemini-3.5-flash-lite`) with reason `short_simple_prompt`.
 
-### Simulated Replay Benchmark (`scripts/replay.js`):
+### Replay Benchmark (`scripts/replay.js`):
 Evaluated a representative workload of 30 diverse queries (short Q&A, coding, analysis, and system design):
 - **Total Prompts**: 30
 - **Routed to Cheap Tier**: 15 (50.0%)
@@ -111,7 +115,10 @@ Evaluated a representative workload of 30 diverse queries (short Q&A, coding, an
 - **Always-Capable Baseline Spend**: 120 paise (₹1.20)
 - **Gateway Routed Spend**: 75 paise (₹0.75)
 - **Net Simulated Savings**: **45 paise (₹0.45) -> 37.5% Cost Reduction**.
-- *Caveats*: This benchmark is simulated using an assumed average of 150 output tokens and does not qualitatively evaluate model response quality.
+- *Caveats & Honesty*:
+  - The default replay is **simulated** using an assumed average of 150 output tokens.
+  - **Response quality was NOT evaluated** across tiers.
+  - A live execution mode (`node scripts/replay.js --live`) is provided to execute all prompts through the live gateway and measure actual PostgreSQL `usage_logs` costs.
 
 ## Synchronous vs Asynchronous Logging
 - **Decision**: Synchronous logging directly in the database transaction of `settleBudget` inside `finally`.

@@ -55,6 +55,12 @@ export function route(body = {}, config = env) {
   }
 
   // 3. Rule: Large max_tokens requested (> ROUTER_CAPABLE_MAX_TOKENS)
+  // NOTE ON CALLER-INTENT VS GATEWAY-OWNED BUDGET:
+  // The router reads body.max_tokens strictly as an advisory signal of caller generation intent:
+  // if the caller requests a large token window (>1024), we route to the capable tier.
+  // HOWEVER, the gateway does NOT trust body.max_tokens for budget reservation or provider invocation;
+  // it enforces a gateway-owned output ceiling per tier (1000 for lite, 2500 for flash) to prevent
+  // callers from manipulating reservation amounts or exhausting quotas.
   if (maxTokens && maxTokens > config.ROUTER_CAPABLE_MAX_TOKENS) {
     return {
       model: config.MODEL_CAPABLE,

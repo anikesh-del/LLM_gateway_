@@ -67,7 +67,7 @@ Instead of using floats or counting raw tokens, the gateway enforces budgets str
    - Worst-case cost is calculated and deducted in a single atomic SQL statement:
      ```sql
      UPDATE api_keys
-     SET spent_paise = spent_paise + $1, updated_at = NOW()
+     SET spent_paise = spent_paise + $1
      WHERE id = $2 AND (spent_paise + $1) <= budget_paise
      RETURNING spent_paise, budget_paise;
      ```
@@ -79,17 +79,18 @@ Instead of using floats or counting raw tokens, the gateway enforces budgets str
    - The unspent reserved difference is refunded atomically:
      ```sql
      UPDATE api_keys
-     SET spent_paise = GREATEST(0, spent_paise - $1), updated_at = NOW()
+     SET spent_paise = GREATEST(0, spent_paise - $1)
      WHERE id = $2;
      ```
    - On provider errors or timeouts (502/504), the reservation is **100% refunded**.
    - If upstream provider omits `usage` metadata, the gateway safely falls back to the gateway output token estimate rather than recording 0.
 
-### 2. Circuit Breaker Pattern
+### 2. Circuit Breaker Pattern & Deadlock Protection
 A robust in-memory state machine protects upstream providers and local resources:
 - **`CLOSED`**: All traffic flows normally. Failures (5xx/504) increment consecutive failure counters.
-- **`OPEN`**: When consecutive failures cross the threshold (default: 5), the circuit trips to `OPEN`. All incoming requests are immediately rejected with `503 Service Unavailable` (`Retry-After: 30`) without hitting the upstream provider.
-- **`HALF_OPEN`**: After the cooldown period (30 seconds), the circuit transitions to `HALF_OPEN`. It allows **exactly one probe request** through to canary test provider recovery. If the probe succeeds, the circuit resets to `CLOSED`; if the probe fails, it resets the cooldown and re-enters `OPEN`.
+- **`OPEN`**: When consecutive failures cross the threshold (default: 5), the circuit trips to `OPEN`. All incoming requests are immediately rejected with `503 Service Unavailable` (`Retry-After: 15`) without hitting the upstream provider.
+- **`HALF_OPEN`**: After the cooldown period (15 seconds), the circuit transitions to `HALF_OPEN`. It allows **exactly one probe request** through to canary test provider recovery. If the probe succeeds, the circuit resets to `CLOSED`; if the probe fails (5xx/504), it resets the cooldown and re-enters `OPEN`.
+- **Probe Release Protection**: If the probe request fails caller-side (400 validation error, 402 budget exceeded) before contacting the provider, `geminiBreaker.releaseProbe()` immediately unlocks the probe state so the next request can probe without delay. If a probe hangs or crashes, `isOpen()` expires `HALF_OPEN` after the cooldown duration to prevent indefinite lockouts.
 
 ### 3. Upstream Provider Resilience & Fallback
 - **Per-Attempt Timeout:** Bounded by `PROVIDER_TIMEOUT_MS` (default: 30s) using native `AbortController`. Maps to `504 Gateway Timeout`.
@@ -162,14 +163,20 @@ npm start
 The server will start at `http://localhost:3000`. You can also open `http://localhost:3000` directly in your browser to access the built-in **Developer Test Console**.
 
 ### 5. Run the Test Suite
-Run the 43 comprehensive Vitest tests:
+Run the automated Vitest test suite:
 ```bash
 npm test
 ```
+> **Note**: The integration and concurrency tests require a local running PostgreSQL instance (as configured in `.env`). Ensure PostgreSQL is running and migrations have been applied (`npm run migrate`) before executing `npm test`.
 
 ### 6. Run Replay Benchmark
+Simulated benchmark across 30 varied prompts:
 ```bash
 npm run replay
+```
+*(Optional) You can also run the replay through the live gateway and record actual metrics from PostgreSQL `usage_logs`:*
+```bash
+node scripts/replay.js --live
 ```
 
 ---
@@ -260,36 +267,50 @@ x-gateway-cost-paise: 1
 ```
 
 ### 4. Query Spend and Usage Logs (Admin)
-Query aggregate spend metrics and request log history:
+Query aggregate spend metrics and request log history (optionally filter by `key_id`):
 ```bash
-curl -X GET "http://localhost:3000/usage?limit=10" \
+curl -X GET "http://localhost:3000/usage" \
   -H "Authorization: Bearer super_secret_admin_token_minimum_16_chars"
 ```
 **Response (200 OK):**
 ```json
 {
+  "key": null,
   "summary": {
     "total_requests": 1,
-    "total_cost_paise": 1,
+    "total_spent_paise": 1,
+    "total_spent_inr": "0.01",
     "total_tokens_in": 15,
-    "total_tokens_out": 8,
-    "total_tokens": 23,
-    "by_model": {
-      "gemini-3.5-flash-lite": { "requests": 1, "cost_paise": 1 }
-    }
+    "total_tokens_out": 8
   },
-  "logs": [
+  "models": [
     {
+      "model": "gemini-3.5-flash-lite",
+      "requests": 1,
+      "cost_paise": 1,
+      "cost_inr": "0.01",
+      "tokens_in": 15,
+      "tokens_out": 8
+    }
+  ],
+  "statuses": {
+    "ok": 1
+  },
+  "recent_logs": [
+    {
+      "id": "7f139260-ca27-466a-bc3e-bf64b3c41efb",
       "request_id": "req_404b9c9f0003b...",
-      "key_name": "production-service-key",
+      "api_key_id": "19b4e13e-a745-4221-8255-a4bcbf340c21",
+      "provider": "gemini",
       "model": "gemini-3.5-flash-lite",
       "route_reason": "short_simple_prompt",
       "tokens_in": 15,
       "tokens_out": 8,
       "cost_paise": 1,
+      "cost_inr": "0.01",
       "status": "ok",
       "latency_ms": 532,
-      "attempts": 1,
+      "error_code": null,
       "created_at": "2026-11-26T11:25:01.000Z"
     }
   ]

@@ -18,7 +18,7 @@ export class CircuitBreaker {
     this.failureThreshold = failureThreshold;
     this.cooldownMs = cooldownMs;
     this.name = name;
-    
+
     this.state = 'CLOSED'; // 'CLOSED' | 'OPEN' | 'HALF_OPEN'
     this.consecutiveFailures = 0;
     this.nextAttempt = Date.now();
@@ -40,9 +40,26 @@ export class CircuitBreaker {
       return true; // Still open, fail fast
     }
     if (this.state === 'HALF_OPEN') {
-      return true; // Already probing; block concurrent callers until probe finishes
+      if (Date.now() >= this.nextAttempt) {
+        // Probe timed out or was abandoned without reporting; allow a fresh probe
+        this.nextAttempt = Date.now() + this.cooldownMs;
+        return false;
+      }
+      return true; // Already probing; block concurrent callers until probe finishes or cooldown expires
     }
     return false;
+  }
+
+  /**
+   * Release an in-flight probe if the probe request was rejected caller-side
+   * (e.g., 400 validation, 402 budget exceeded) before contacting the upstream provider.
+   * Immediately resets to OPEN with expired cooldown so the next incoming request can probe.
+   */
+  releaseProbe() {
+    if (this.state === 'HALF_OPEN') {
+      this.state = 'OPEN';
+      this.nextAttempt = Date.now();
+    }
   }
 
   /**

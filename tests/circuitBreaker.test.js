@@ -84,4 +84,46 @@ describe('Circuit Breaker Pattern Suite', () => {
     expect(breaker.consecutiveFailures).toBe(0);
     expect(breaker.isOpen()).toBe(false);
   });
+
+  it('does not get stuck in HALF_OPEN when releaseProbe() is called on client error (400/402)', async () => {
+    breaker.recordFailure();
+    breaker.recordFailure();
+    breaker.recordFailure();
+    expect(breaker.state).toBe('OPEN');
+
+    // Wait for cooldown
+    await new Promise(r => setTimeout(r, 120));
+
+    // First request is granted the probe
+    expect(breaker.isOpen()).toBe(false);
+    expect(breaker.state).toBe('HALF_OPEN');
+
+    // Concurrent requests are blocked while probe is in flight
+    expect(breaker.isOpen()).toBe(true);
+
+    // Probe request is rejected caller-side (e.g. 400 validation or 402 budget exceeded)
+    breaker.releaseProbe();
+
+    // Circuit immediately allows the next caller to probe rather than locking in HALF_OPEN forever
+    expect(breaker.isOpen()).toBe(false);
+    expect(breaker.state).toBe('HALF_OPEN');
+  });
+
+  it('expires HALF_OPEN after cooldown if probe was abandoned without recording', async () => {
+    breaker.recordFailure();
+    breaker.recordFailure();
+    breaker.recordFailure();
+    expect(breaker.state).toBe('OPEN');
+
+    await new Promise(r => setTimeout(r, 120));
+    expect(breaker.isOpen()).toBe(false);
+    expect(breaker.state).toBe('HALF_OPEN');
+
+    // Probe leaked or died without calling recordSuccess, recordFailure, or releaseProbe
+    // Wait for cooldown duration to expire
+    await new Promise(r => setTimeout(r, 120));
+
+    // The breaker must NOT remain stuck in HALF_OPEN returning true forever; it allows a fresh probe
+    expect(breaker.isOpen()).toBe(false);
+  });
 });

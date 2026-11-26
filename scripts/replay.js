@@ -96,6 +96,7 @@ export function runReplay() {
   console.log(`Always-Capable Spend:      ${alwaysCapableTotalCostPaise} paise (₹${(alwaysCapableTotalCostPaise / 100).toFixed(2)})`);
   console.log(`Routed Gateway Spend:      ${routerTotalCostPaise} paise (₹${(routerTotalCostPaise / 100).toFixed(2)})`);
   console.log(`Net Simulated Savings:     ${savingsPaise} paise (₹${(savingsPaise / 100).toFixed(2)}) -> ${savingsPercent}% SAVINGS`);
+  console.log('QUALITY CAVEAT: Response quality was NOT evaluated. This benchmark measures cost and token metrics only.');
   console.log('='.repeat(70));
 
   return {
@@ -109,6 +110,74 @@ export function runReplay() {
   };
 }
 
+export async function runLiveReplay() {
+  const { app } = await import('../src/server.js');
+  const { pool } = await import('../src/db/pool.js');
+  const request = (await import('supertest')).default;
+
+  console.log('='.repeat(70));
+  console.log('LIVE GATEWAY REPLAY BENCHMARK (MEASURED VIA POSTGRES USAGE_LOGS)');
+  console.log('QUALITY CAVEAT: Response quality was NOT qualitatively evaluated.');
+  console.log('='.repeat(70));
+
+  // 1. Create a temporary benchmark virtual key with 50,000 paise (₹500) budget
+  const createRes = await request(app)
+    .post('/admin/keys')
+    .set('Authorization', `Bearer ${env.ADMIN_SECRET}`)
+    .send({ name: 'benchmark-replay-key', budget_paise: 50000 });
+
+  const testKey = createRes.body.key;
+  const testKeyId = createRes.body.id;
+
+  try {
+    let cheapCount = 0;
+    let capableCount = 0;
+
+    for (const item of PROMPTS) {
+      const messages = [{ role: 'user', content: item.text }];
+      const res = await request(app)
+        .post('/v1/chat/completions')
+        .set('Authorization', `Bearer ${testKey}`)
+        .send({ model: 'auto', messages });
+
+      const model = res.headers['x-gateway-model'];
+      const reason = res.headers['x-gateway-route-reason'];
+      const cost = Number(res.headers['x-gateway-cost-paise'] || 0);
+
+      if (model === env.MODEL_CHEAP) cheapCount++;
+      else capableCount++;
+
+      console.log(
+        `[#${item.id.toString().padStart(2)}] Model: ${(model || 'err').padEnd(21)} | Reason: ${(reason || 'err').padEnd(25)} | Cost: ${cost}p | Status: ${res.status}`
+      );
+    }
+
+    // Query usage_logs table to verify source of truth in PostgreSQL
+    const logSum = await pool.query(
+      'SELECT COUNT(*)::int as count, SUM(cost_paise)::bigint as total_cost, SUM(tokens_in)::int as tokens_in, SUM(tokens_out)::int as tokens_out FROM usage_logs WHERE api_key_id = $1',
+      [testKeyId]
+    );
+    const row = logSum.rows[0];
+
+    console.log('='.repeat(70));
+    console.log(`Live Replay Finished (${row.count} requests executed through gateway)`);
+    console.log(`Measured Total Cost from usage_logs: ${row.total_cost} paise (₹${(Number(row.total_cost) / 100).toFixed(2)})`);
+    console.log(`Total Tokens: In=${row.tokens_in}, Out=${row.tokens_out}`);
+    console.log(`Routed to Cheap: ${cheapCount}, Capable: ${capableCount}`);
+    console.log('QUALITY CAVEAT: Response quality was NOT evaluated across tiers.');
+    console.log('='.repeat(70));
+  } finally {
+    // Teardown temporary benchmark records
+    await pool.query('DELETE FROM usage_logs WHERE api_key_id = $1', [testKeyId]);
+    await pool.query('DELETE FROM api_keys WHERE id = $1', [testKeyId]);
+    await pool.end();
+  }
+}
+
 if (process.argv[1] && process.argv[1].endsWith('replay.js')) {
-  runReplay();
+  if (process.argv.includes('--live')) {
+    runLiveReplay();
+  } else {
+    runReplay();
+  }
 }

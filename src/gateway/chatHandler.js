@@ -31,6 +31,7 @@ export async function chatHandler(req, res) {
   const startTime = Date.now();
 
   // 1. Check Circuit Breaker (Fail-fast protection against cascading failures)
+  const wasHalfOpenBefore = geminiBreaker.state === 'HALF_OPEN';
   if (geminiBreaker.isOpen()) {
     res.setHeader('Retry-After', '15');
     return res.status(503).json({
@@ -41,8 +42,17 @@ export async function chatHandler(req, res) {
     });
   }
 
+  // If breaker entered HALF_OPEN during isOpen(), this request is the designated probe
+  const isProbe = geminiBreaker.state === 'HALF_OPEN' && !wasHalfOpenBefore;
+  const abortIfProbe = () => {
+    if (isProbe) {
+      geminiBreaker.releaseProbe();
+    }
+  };
+
   // 2. Validate stream rejection
   if (req.body && req.body.stream === true) {
+    abortIfProbe();
     return res.status(400).json({
       error: {
         code: 'invalid_request',
@@ -54,6 +64,7 @@ export async function chatHandler(req, res) {
   // 3. Validate request body schema
   const parsed = chatCompletionSchema.safeParse(req.body);
   if (!parsed.success) {
+    abortIfProbe();
     return res.status(400).json({
       error: {
         code: 'invalid_request',
@@ -73,6 +84,7 @@ export async function chatHandler(req, res) {
     routedModel = routing.model;
     routeReason = routing.reason;
   } catch (routingErr) {
+    abortIfProbe();
     return res.status(routingErr.statusCode || 400).json({
       error: {
         code: routingErr.code || 'invalid_request',
@@ -89,6 +101,7 @@ export async function chatHandler(req, res) {
   const reservation = await reserveBudget(apiKey.id, reservedPaise);
 
   if (!reservation.success) {
+    abortIfProbe();
     // Return 402 immediately without inserting a log row to prevent table bloat and high write amplification
     return res.status(402).json({
       error: {
@@ -149,6 +162,8 @@ export async function chatHandler(req, res) {
 
       if (exec.errorStatus === 502 || exec.errorStatus === 504) {
         geminiBreaker.recordFailure();
+      } else {
+        abortIfProbe();
       }
 
       if (exec.isBudgetExceededOnFallback) {
@@ -186,6 +201,7 @@ export async function chatHandler(req, res) {
     providerStatus = err.isTimeout ? 'timeout' : 'provider_error';
     errorCode = err.code || 'UNKNOWN_ERROR';
     responseStatusCode = err.isTimeout ? 504 : 502;
+    geminiBreaker.recordFailure();
     responsePayload = {
       error: {
         code: err.isTimeout ? 'provider_timeout' : 'provider_error',
@@ -223,6 +239,7 @@ export async function chatHandler(req, res) {
   res.setHeader('x-gateway-request-id', requestId);
   res.setHeader('x-gateway-model', finalModel);
   res.setHeader('x-gateway-route-reason', routeReason);
+  res.setHeader('x-gateway-cost-paise', String(actualCostPaise));
 
   return res.status(responseStatusCode).json(responsePayload);
 }

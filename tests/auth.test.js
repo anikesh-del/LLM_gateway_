@@ -106,5 +106,15 @@ describe('Phase 2 Keys and Auth Suite', () => {
       expect(authRes.status).toBe(401);
       expect(authRes.body.error.message).toContain('revoked');
     });
+
+    it('returns 400 when revoking with non-UUID id', async () => {
+      const res = await request(app)
+        .post('/admin/keys/not-a-valid-uuid/revoke')
+        .set('Authorization', `Bearer ${env.ADMIN_SECRET}`);
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('invalid_request');
+      expect(res.body.error.message).toContain('UUID');
+    });
   });
 });

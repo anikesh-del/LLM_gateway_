@@ -126,6 +126,8 @@ describe('Phase 3 Proxy and Logging Suite', () => {
       expect(res.headers['x-gateway-request-id']).toMatch(/^req_/);
       expect(res.headers['x-gateway-model']).toBe('gemini-3.5-flash');
       expect(res.headers['x-gateway-route-reason']).toBe('explicit');
+      expect(res.headers).toHaveProperty('x-gateway-cost-paise');
+      expect(Number(res.headers['x-gateway-cost-paise'])).toBeGreaterThanOrEqual(1);
 
       // Verify usage log record was inserted in Postgres
       const reqId = res.headers['x-gateway-request-id'];
