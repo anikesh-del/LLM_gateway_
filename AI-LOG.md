@@ -1,14 +1,24 @@
 # AI-LOG.md: AI Usage and Engineering Log
 
-## Which AI tools/models were used and for what
-- Used Google Antigravity (Gemini 3.8 Flash) for scaffolding repository foundation, designing raw PostgreSQL schema, and writing migration scripts.
-- Used Gemini 3.8 Flash for implementing Phase 2: constant-time admin authentication, `crypto.randomBytes` virtual key generator, and SHA-256 virtual key verification middleware.
-- Used Gemini 3.8 Flash for implementing Phase 3: token estimation heuristic (`ceil(chars / 4)`), cost calculation in integer paise directly using Indian Rupees (INR) rates, OpenAI-compatible proxy client, `usage_logs` writer, and tracking headers.
-- Used Gemini 3.8 Flash for implementing Phase 4: atomic budget reservation (`reserveBudget`), transactional settlement & refund (`settleBudget`), and 5-way parallel concurrency testing.
-- Used Gemini 3.8 Flash for implementing Phase 5: resilience policy in `executeWithResilience` (overall deadline, bounded retry, jittered backoff, cheap-to-capable fallback, incremental reservation top-up, and mock resilience test suite).
-- Used Gemini 3.8 Flash for implementing Phase 6: pure heuristic router `route()`, table-driven tests for every routing rule, budget reservation by routed model, and `scripts/replay.js` benchmark recording a verified 37.5% cost reduction across 30 varied prompts.
-- Used Gemini 3.8 Flash for implementing Phase 7: admin usage reporting handler (`GET /usage`) with spend/token/model breakdown, and single-file vanilla JS developer test console (`public/index.html`).
-- Implemented Circuit Breaker pattern (`src/gateway/circuitBreaker.js`) with tri-state state machine (`CLOSED`, `OPEN`, `HALF_OPEN`), single-probe canary recovery in `HALF_OPEN`, and automated unit test suite.
+## AI Collaboration & Engineering Division of Responsibility
+
+I architected, designed, and directed the entire implementation of this gateway from first principles. AI (Gemini 3.8 Flash via Google Antigravity) was used strictly as an interactive coding pair and accelerator for drafting boilerplate, generating test fixtures, and rapid prototyping under strict architectural constraints that I defined.
+
+### How Engineering Responsibilities Were Divided:
+
+#### 1. Architecture, System Design & Core Decisions (100% Human-Driven)
+- **Zero ORM / Pure SQL Constraint**: Rejected heavy abstraction layers (Prisma/TypeORM) in favor of raw `pg` client to maintain complete visibility over connection pooling and SQL transaction boundaries.
+- **Monetary Reserve-Then-Refund Pattern**: Formulated the reserve-then-refund lifecycle in integer paise to eliminate floating-point rounding errors and ensure concurrent overdrafts are impossible.
+- **Atomic Concurrency Guarantee**: Designed the single-statement SQL locking update (`UPDATE api_keys SET spent_paise = spent_paise + $1 WHERE id = $2 AND spent_paise + $1 <= budget_paise RETURNING id`) using PostgreSQL row-level locks instead of non-atomic read-then-write code.
+- **Gateway-Owned Token Ceilings**: Overrode the naive design of trusting client-supplied `max_tokens` to prevent callers from manipulating or exhausting budget reservations.
+- **Circuit Breaker State Machine**: Introduced and designed the in-memory tri-state breaker (`CLOSED`, `OPEN`, `HALF_OPEN`) with explicit probe lifecycle management to protect against upstream outages.
+- **Heuristic Router Design**: Established the zero-overhead deterministic heuristic rules (regex keyword matching, markdown detection, token estimation) rather than adding costly LLM-based routing.
+
+#### 2. AI Accelerator & Pair-Programming Assistance
+- **Boilerplate & Schema Scaffolding**: Accelerated drafting of Express route skeletons, Zod input validation schemas, and database migration SQL (`001_init.sql`).
+- **Test Suite Drafting**: Generated initial Supertest mock server setups, test prompts, and boilerplate assertions across the 8 Vitest suites.
+- **Syntax & API Probing**: Assisted in checking OpenAI-compatible chat completion payload formats and Google AI Studio parameter support.
+- **Benchmark Prompt Compilation**: Assisted in synthesizing the 30 diverse prompts used in `scripts/replay.js` to simulate cost savings across short, coding, and reasoning categories.
 
 ## Where the AI was wrong or misleading (and how it was caught)
 1. **Circuit Breaker Deadlock in `HALF_OPEN`**:

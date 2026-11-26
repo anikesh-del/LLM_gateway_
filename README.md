@@ -6,6 +6,29 @@ Designed with monetary budget protection, atomic reservation-then-refund account
 
 ---
 
+## 🚀 Live Deployed Service & Quick Test
+
+The gateway is deployed live on Render with a pre-configured PostgreSQL instance. You can test it immediately using the live URL or the interactive web console:
+
+- **Live Service URL:** [https://llm-gateway-set3.onrender.com](https://llm-gateway-set3.onrender.com)
+- **Interactive Web Console:** [https://llm-gateway-set3.onrender.com](https://llm-gateway-set3.onrender.com)
+- **Pre-provisioned Test Virtual API Key:** `gw_0b5979059ccd10d01d291354ad9dd3f2c24a39baf000431a`
+
+> **Quick 1-Second cURL Test against Live Gateway:**
+> ```bash
+> curl -X POST https://llm-gateway-set3.onrender.com/v1/chat/completions \
+>   -H "Authorization: Bearer gw_0b5979059ccd10d01d291354ad9dd3f2c24a39baf000431a" \
+>   -H "Content-Type: application/json" \
+>   -d '{
+>     "model": "auto",
+>     "messages": [
+>       { "role": "user", "content": "What is the capital of India?" }
+>     ]
+>   }'
+> ```
+
+---
+
 ## Architecture & Request Lifecycle
 
 ```mermaid
@@ -183,27 +206,29 @@ node scripts/replay.js --live
 
 ## Working cURL Commands
 
+> The commands below target the live deployed service (`https://llm-gateway-set3.onrender.com`). If running locally, replace with `http://localhost:3000`.
+
 ### 1. Health Check
 ```bash
-curl -X GET http://localhost:3000/health
+curl -X GET https://llm-gateway-set3.onrender.com/health
 ```
 **Response (200 OK):**
 ```json
 {
   "status": "healthy",
   "database": "connected",
-  "timestamp": "2026-11-26T11:25:00.000Z"
+  "timestamp": "2026-11-26T21:30:00.000Z"
 }
 ```
 
 ### 2. Create Virtual API Key (Admin)
 Creates a virtual key with ₹50 budget (5,000 paise):
 ```bash
-curl -X POST http://localhost:3000/admin/keys \
-  -H "Authorization: Bearer super_secret_admin_token_minimum_16_chars" \
+curl -X POST https://llm-gateway-set3.onrender.com/admin/keys \
+  -H "Authorization: Bearer <ADMIN_SECRET_PROVIDED_IN_EMAIL>" \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "production-service-key",
+    "name": "evaluator-key",
     "budget_paise": 5000
   }'
 ```
@@ -211,21 +236,21 @@ curl -X POST http://localhost:3000/admin/keys \
 ```json
 {
   "id": "19b4e13e-a745-4221-8255-a4bcbf340c21",
-  "name": "production-service-key",
-  "key": "gw_49b5c328f20387532d8471131a31dce9",
-  "key_prefix": "gw_49b5c",
+  "name": "evaluator-key",
+  "key": "gw_0b5979059ccd10d01d291354ad9dd3f2c24a39baf000431a",
+  "key_prefix": "gw_0b597",
   "budget_paise": 5000,
   "spent_paise": 0,
-  "created_at": "2026-11-26T11:25:00.000Z"
+  "created_at": "2026-11-26T21:30:00.000Z"
 }
 ```
 *(Store the full `gw_...` key safely; only the SHA-256 hash is saved in the database!)*
 
 ### 3. Send Chat Completion (Proxy)
-Sends a chat completion request through the gateway using the virtual key:
+Sends a chat completion request through the gateway using the pre-provisioned evaluator virtual key:
 ```bash
-curl -X POST http://localhost:3000/v1/chat/completions \
-  -H "Authorization: Bearer gw_49b5c328f20387532d8471131a31dce9" \
+curl -X POST https://llm-gateway-set3.onrender.com/v1/chat/completions \
+  -H "Authorization: Bearer gw_0b5979059ccd10d01d291354ad9dd3f2c24a39baf000431a" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "auto",
@@ -269,8 +294,8 @@ x-gateway-cost-paise: 1
 ### 4. Query Spend and Usage Logs (Admin)
 Query aggregate spend metrics and request log history (optionally filter by `key_id`):
 ```bash
-curl -X GET "http://localhost:3000/usage" \
-  -H "Authorization: Bearer super_secret_admin_token_minimum_16_chars"
+curl -X GET "https://llm-gateway-set3.onrender.com/usage" \
+  -H "Authorization: Bearer <ADMIN_SECRET_PROVIDED_IN_EMAIL>"
 ```
 **Response (200 OK):**
 ```json
