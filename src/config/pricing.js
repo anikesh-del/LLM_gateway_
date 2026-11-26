@@ -30,6 +30,10 @@ export const MODEL_PRICING_INR = {
   'gemini-3.5-flash': {
     inputPriceInrPerMillion: 25.80,
     outputPriceInrPerMillion: 215.00
+  },
+  'gemini-3-flash-preview': {
+    inputPriceInrPerMillion: 25.80,
+    outputPriceInrPerMillion: 215.00
   }
 };
 
@@ -39,6 +43,10 @@ export const MODEL_CONFIGS = {
     maxOutputTokensCap: 2048
   },
   'gemini-3.5-flash': {
+    defaultOutputTokens: 2500,
+    maxOutputTokensCap: 4096
+  },
+  'gemini-3-flash-preview': {
     defaultOutputTokens: 2500,
     maxOutputTokensCap: 4096
   }
